@@ -205,15 +205,38 @@ export const AiChatModal: React.FC<{ isOpen: boolean; onClose: () => void }> = (
         showToast('Chat cleared!', 'success');
     };
 
-    // FIX: Correctly map API response values to the enum keys expected by the NewWatchlistItem type.
+    // FIX: Correctly map API response values to the enum values (not keys) for database storage
     const handleAddToWatchlist = async (details: MediaDetails): Promise<boolean> => {
-        const newItemTypeKey: keyof typeof ItemType = details.type.toLowerCase().includes('movie')
-            ? 'MOVIES'
-            : 'TV_SERIES';
+        // Improved type detection: Check for movie in type string (handles "Movie", "Anime Movie", etc.)
+        const typeLower = details.type.toLowerCase();
+        const isMovie = typeLower.includes('movie') && !typeLower.includes('series');
+        // Use enum VALUES (not keys) to match database storage format
+        const newItemType = isMovie ? ItemType.MOVIES : ItemType.TV_SERIES;
+        const newItemTypeKey: keyof typeof ItemType = isMovie ? 'MOVIES' : 'TV_SERIES';
 
-        const matchedSubTypeKey = (Object.keys(SubType) as Array<keyof typeof SubType>).find(
+        // Improved sub_type matching: Case-insensitive with fallback
+        let matchedSubTypeKey: keyof typeof SubType | undefined = (Object.keys(SubType) as Array<keyof typeof SubType>).find(
             key => SubType[key].toLowerCase() === details.sub_type.toLowerCase()
         );
+        
+        // If exact match fails, try partial matching
+        if (!matchedSubTypeKey && details.sub_type) {
+            const subTypeLower = details.sub_type.toLowerCase();
+            matchedSubTypeKey = (Object.keys(SubType) as Array<keyof typeof SubType>).find(
+                key => {
+                    const enumValue = SubType[key].toLowerCase();
+                    return enumValue.includes(subTypeLower) || subTypeLower.includes(enumValue);
+                }
+            ) as keyof typeof SubType | undefined;
+        }
+        
+        // Default to ANIME if sub_type is not found and type contains "anime"
+        if (!matchedSubTypeKey && typeLower.includes('anime')) {
+            matchedSubTypeKey = 'ANIME';
+        }
+        
+        // Get the sub_type VALUE (not key) for database storage
+        const newItemSubType = matchedSubTypeKey ? SubType[matchedSubTypeKey] : undefined;
         
         const seasonNumber = newItemTypeKey === 'TV_SERIES' ? 1 : undefined;
 
@@ -242,19 +265,31 @@ export const AiChatModal: React.FC<{ isOpen: boolean; onClose: () => void }> = (
             }
         }
 
-        const newItem: NewWatchlistItem = {
+        // Create item with enum VALUES (matching database format used by smartPasteParser and other parts)
+        // Note: The NewWatchlistItem interface expects keys, but we need to convert to values for storage
+        const newItem: any = {
             title: details.name,
-            type: newItemTypeKey,
-            sub_type: matchedSubTypeKey,
-            status: 'WATCH',
+            type: newItemType, // Use VALUE ('Movies' or 'TV Series'), not key
+            sub_type: newItemSubType, // Use VALUE ('Anime', 'Bollywood', etc.), not key
+            status: Status.WATCH, // Use VALUE
             season: seasonNumber,
             part: partNumber,
-            language: detectedLanguageKey,
-            release_type: detectedReleaseTypeKey,
+            language: Language[detectedLanguageKey], // Use VALUE
+            release_type: ReleaseType[detectedReleaseTypeKey], // Use VALUE
         };
+
+        // Log for debugging (can be removed in production)
+        console.log('Adding item from AI chat:', {
+            originalType: details.type,
+            detectedType: newItemType,
+            originalSubType: details.sub_type,
+            detectedSubType: newItemSubType,
+            item: newItem
+        });
 
         const newId = await addItem(newItem);
         if (newId) {
+            showToast(`Added "${details.name}" to watchlist!`, 'success');
             setTimeout(() => {
                 onClose();
                 setView('watchlist');

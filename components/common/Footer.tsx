@@ -36,30 +36,52 @@ export const Footer = ({ currentView }: { currentView: string }) => {
     return (
         <footer className="bg-background border-t border-border mt-auto">
             <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                    <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 md:gap-12">
+                    {/* Left: Branding */}
+                    <div className="space-y-3">
                         <h3 className="text-xl font-bold text-foreground">WatchTracker</h3>
-                        <p className="text-muted-foreground text-sm">Your personal hub for tracking anime, movies, and series.</p>
-                        <p className="text-xs text-muted-foreground">&copy; {new Date().getFullYear()} WatchTracker. All rights reserved.</p>
+                        <p className="text-muted-foreground text-sm leading-relaxed">Your personal hub for tracking anime, movies, and series.</p>
+                        <p className="text-xs text-muted-foreground mt-4">&copy; {new Date().getFullYear()} WatchTracker. All rights reserved.</p>
                     </div>
+                    
+                    {/* Center: Navigation */}
                     <div className="space-y-3">
-                        <h4 className="font-semibold text-foreground">Navigation</h4>
-                        <ul className="space-y-2 text-sm flex flex-col items-start">
-                            <li><FooterLink onClick={() => handleNav('home')} aria-label="Navigate to Home page">Home</FooterLink></li>
-                            <li><FooterLink onClick={() => handleNav('watchlist')} aria-label="Navigate to Watchlist page">Watchlist</FooterLink></li>
-                            <li><FooterLink onClick={() => handleNav('updates')} aria-label="Navigate to Updates page">Updates</FooterLink></li>
+                        <h4 className="font-semibold text-foreground mb-3">Navigation</h4>
+                        <ul className="space-y-2 text-sm flex flex-col">
+                            <li>
+                                <FooterLink onClick={() => handleNav('home')} aria-label="Navigate to Home page">
+                                    Home
+                                </FooterLink>
+                            </li>
+                            <li>
+                                <FooterLink onClick={() => handleNav('watchlist')} aria-label="Navigate to Watchlist page">
+                                    Watchlist
+                                </FooterLink>
+                            </li>
+                            <li>
+                                <FooterLink onClick={() => handleNav('updates')} aria-label="Navigate to Updates page">
+                                    Updates
+                                </FooterLink>
+                            </li>
                         </ul>
                     </div>
+                    
+                    {/* Right: Actions */}
                     <div className="space-y-3">
-                        <h4 className="font-semibold text-foreground">Actions</h4>
-                        <ul className="space-y-2 text-sm flex flex-col items-start">
-                            <li><FooterLink onClick={() => handleNav('add-items')} aria-label="Navigate to Add Items section">Add Items</FooterLink></li>
-                            <li><FooterLink onClick={() => handleNav('favorites')} aria-label="Navigate to filtered Favorites view">Favorites</FooterLink></li>
+                        <h4 className="font-semibold text-foreground mb-3">Actions</h4>
+                        <ul className="space-y-2 text-sm flex flex-col">
+                            <li>
+                                <FooterLink onClick={() => handleNav('add-items')} aria-label="Navigate to Add Items section">
+                                    Add Items
+                                </FooterLink>
+                            </li>
+                            <li>
+                                <FooterLink onClick={() => handleNav('favorites')} aria-label="Navigate to filtered Favorites view">
+                                    Favorites
+                                </FooterLink>
+                            </li>
                         </ul>
                     </div>
-                </div>
-                <div className="mt-8 pt-4 border-t border-border text-center text-xs text-muted-foreground">
-                    <p>Built with React, Tailwind CSS, and Supabase.</p>
                 </div>
             </div>
         </footer>

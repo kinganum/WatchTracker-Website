@@ -3,13 +3,28 @@ import { useAppContext } from '../../contexts/AppContext';
 import { getGeminiInsights, getMediaByPersonFromAi } from '../../services/geminiService';
 import { Icon } from '../Icons';
 import { parseReleaseDate } from '../../utils/textFormatters';
+import { ItemType, SubType, Status, Language, ReleaseType } from '../../types';
 import * as db from '../../services/db';
 
 // --- Sub-components for the Modal ---
 
-const RecommendationCard: React.FC<{ item: any, onCopy: (title: string) => void, onCastClick: (person: string) => void | Promise<void> }> = ({ item, onCopy, onCastClick }) => {
+const RecommendationCard: React.FC<{ 
+    item: any, 
+    onCopy: (title: string) => void, 
+    onCastClick: (person: string) => void | Promise<void>,
+    onAddToWatchlist: (item: any) => Promise<boolean>
+}> = ({ item, onCopy, onCastClick, onAddToWatchlist }) => {
+    const [isAdded, setIsAdded] = useState(false);
     const countLabel = item.item_type === 'TV Series' ? 'Seasons' : 'Parts';
     const castLabel = item.sub_type === 'Anime' ? 'Characters' : 'Cast';
+    
+    const handleAddClick = async () => {
+        setIsAdded(true);
+        const success = await onAddToWatchlist(item);
+        if (!success) {
+            setIsAdded(false);
+        }
+    };
     
     return (
      <div className="p-3 bg-background rounded-lg border border-border">
@@ -59,6 +74,16 @@ const RecommendationCard: React.FC<{ item: any, onCopy: (title: string) => void,
                     <span className="font-semibold">Platform: {item.platform}</span>
                 </div>
             )}
+            <div className="pt-3 border-t border-border">
+                <button 
+                    onClick={handleAddClick}
+                    disabled={isAdded}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-all active:scale-95 disabled:bg-green-600 disabled:cursor-not-allowed"
+                >
+                    <Icon name={isAdded ? "check-circle" : "plus"} className="h-4 w-4" />
+                    {isAdded ? 'Added & Navigating...' : 'Add to Watchlist'}
+                </button>
+            </div>
         </div>
     </div>
 )};
@@ -109,7 +134,7 @@ const ReleaseInfoDisplay = ({ data }: { data: any }) => {
 // --- Main Modal Component ---
 
 export const GeminiModal = () => {
-    const { geminiItem, setGeminiItem, showToast, isOnline } = useAppContext();
+    const { geminiItem, setGeminiItem, showToast, isOnline, addItem, setView } = useAppContext();
     const [activeTab, setActiveTab] = useState('release');
     
     // States for the currently displayed item's data
@@ -255,6 +280,62 @@ export const GeminiModal = () => {
         }
     };
 
+    // Handle adding recommendation to watchlist
+    const handleAddRecommendationToWatchlist = async (recItem: any): Promise<boolean> => {
+        // Map recommendation item to watchlist item format
+        const isMovie = recItem.item_type?.toLowerCase().includes('movie') || false;
+        const newItemType = isMovie ? ItemType.MOVIES : ItemType.TV_SERIES;
+        
+        // Match sub_type
+        let matchedSubType: string | undefined = (Object.keys(SubType) as Array<keyof typeof SubType>).find(
+            key => SubType[key].toLowerCase() === recItem.sub_type?.toLowerCase()
+        ) as keyof typeof SubType | undefined;
+        const newItemSubType = matchedSubType ? SubType[matchedSubType] : undefined;
+        
+        // Default to ANIME if sub_type is not found and it's likely anime
+        const finalSubType = newItemSubType || (recItem.sub_type?.toLowerCase().includes('anime') ? SubType.ANIME : undefined);
+        
+        // Detect language from dub field
+        const languageText = recItem.dub?.toLowerCase() || '';
+        const detectedLanguage = languageText.includes('available') || languageText.includes('dub') 
+            ? Language.DUB 
+            : Language.SUB;
+        
+        // Set season for TV Series
+        const seasonNumber = !isMovie ? 1 : undefined;
+        
+        // Parse part number from count if it's a movie
+        let partNumber: number | undefined = undefined;
+        if (isMovie && recItem.count) {
+            const countNum = parseInt(String(recItem.count), 10);
+            if (!isNaN(countNum) && countNum > 0) {
+                partNumber = countNum;
+            }
+        }
+        
+        const newItem: any = {
+            title: recItem.title,
+            type: newItemType,
+            sub_type: finalSubType,
+            status: Status.WATCH,
+            season: seasonNumber,
+            part: partNumber,
+            language: detectedLanguage,
+            release_type: ReleaseType.NEW, // Default to NEW for recommendations
+        };
+
+        const newId = await addItem(newItem);
+        if (newId) {
+            showToast(`Added "${recItem.title}" to watchlist!`, 'success');
+            setTimeout(() => {
+                setGeminiItem(null);
+                setView('watchlist');
+            }, 500);
+            return true;
+        }
+        return false;
+    };
+
     const handleClose = () => setGeminiItem(null);
 
     if (!geminiItem) return null;
@@ -308,7 +389,15 @@ export const GeminiModal = () => {
 
                             {!loading && !error && activeTab === 'recommendations' && (
                                 <div className="space-y-2">
-                                    {recommendations.map((rec: any) => <RecommendationCard key={rec.title} item={rec} onCopy={handleCopyTitle} onCastClick={handleCastClick} />)}
+                                    {recommendations.map((rec: any) => (
+                                        <RecommendationCard 
+                                            key={rec.title} 
+                                            item={rec} 
+                                            onCopy={handleCopyTitle} 
+                                            onCastClick={handleCastClick}
+                                            onAddToWatchlist={handleAddRecommendationToWatchlist}
+                                        />
+                                    ))}
                                 </div>
                             )}
                         </div>
