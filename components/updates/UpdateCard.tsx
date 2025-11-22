@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import { getUpcomingRelease } from '../../services/geminiService';
 import * as db from '../../services/db';
 import { Icon } from '../Icons';
@@ -28,16 +28,35 @@ const getStatusBadgeClass = (status) => {
     }
 };
 
-export const UpdateCard: React.FC<{ item: any, onLoadComplete: (hasUpdate: boolean) => void, isFetchTriggered: boolean }> = ({ item, onLoadComplete, isFetchTriggered }) => {
+const UpdateCardComponent: React.FC<{ 
+    item: any, 
+    onLoadComplete: (hasUpdate: boolean, cardData?: any) => void, 
+    isFetchTriggered: boolean,
+    fetchManager?: any
+}> = ({ item, onLoadComplete, isFetchTriggered, fetchManager }) => {
     const { isOnline } = useAppContext();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [data, setData] = useState(null);
     const [isReleased, setIsReleased] = useState(null);
     const [startFetch, setStartFetch] = useState(false);
+    const [isWaiting, setIsWaiting] = useState(false);
     const cardRef = useRef(null);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
+    // Track if we've already called onLoadComplete to prevent duplicate calls
+    const hasCalledCompleteRef = useRef(false);
+    
     const fetchData = useCallback(async () => {
+        // Check if fetch is cancelled before starting
+        if (fetchManager?.isCancelled()) {
+            setLoading(false);
+            setIsWaiting(false);
+            return;
+        }
+
+        // Reset completion flag for new fetch
+        hasCalledCompleteRef.current = false;
         setError(null);
         setLoading(true);
         let hasUpdateResult = false;
@@ -51,54 +70,146 @@ export const UpdateCard: React.FC<{ item: any, onLoadComplete: (hasUpdate: boole
                     setData(finalData);
                     hasUpdateResult = finalData.status !== 'No Update Found';
                     setLoading(false);
-                    onLoadComplete(hasUpdateResult);
+                    if (!hasCalledCompleteRef.current) {
+                        hasCalledCompleteRef.current = true;
+                        onLoadComplete(hasUpdateResult, hasUpdateResult ? { ...finalData, itemId: item.id } : undefined);
+                    }
                     return;
                 }
             }
             
             if (isOnline) {
-                const result = await getUpcomingRelease(item);
-                if (typeof result === 'string') {
-                    if (!finalData) setError(result);
-                } else {
-                    finalData = result;
-                    await db.saveUpdateToCache(item.id, result);
+                // Check cancellation before acquiring
+                if (fetchManager?.isCancelled()) {
+                    setLoading(false);
+                    return;
+                }
+
+                // Create abort controller for this fetch
+                if (fetchManager) {
+                    abortControllerRef.current = fetchManager.createAbortController();
+                }
+
+                // Acquire permission from fetch manager if available (limits concurrent fetches)
+                if (fetchManager) {
+                    setIsWaiting(true);
+                    try {
+                        await fetchManager.acquire();
+                    } catch (e: any) {
+                        // If cancelled during acquire, stop here
+                        if (e.message === 'Fetch cancelled' || fetchManager.isCancelled()) {
+                            setLoading(false);
+                            setIsWaiting(false);
+                            if (abortControllerRef.current) {
+                                fetchManager.removeAbortController(abortControllerRef.current);
+                                abortControllerRef.current = null;
+                            }
+                            return;
+                        }
+                        throw e;
+                    }
+                    setIsWaiting(false);
+                }
+
+                // Check cancellation again after acquiring
+                if (fetchManager?.isCancelled() || abortControllerRef.current?.signal.aborted) {
+                    setLoading(false);
+                    if (fetchManager && abortControllerRef.current) {
+                        fetchManager.removeAbortController(abortControllerRef.current);
+                        fetchManager.release();
+                        abortControllerRef.current = null;
+                    }
+                    return;
+                }
+
+                try {
+                    const result = await getUpcomingRelease(item);
+                    
+                    // Check if cancelled during fetch
+                    if (fetchManager?.isCancelled() || abortControllerRef.current?.signal.aborted) {
+                        setLoading(false);
+                        if (fetchManager && abortControllerRef.current) {
+                            fetchManager.removeAbortController(abortControllerRef.current);
+                            fetchManager.release();
+                            abortControllerRef.current = null;
+                        }
+                        return;
+                    }
+
+                    if (typeof result === 'string') {
+                        if (!finalData) setError(result);
+                    } else {
+                        finalData = result;
+                        await db.saveUpdateToCache(item.id, result);
+                    }
+                } catch (fetchError: any) {
+                    // Handle cancellation errors gracefully
+                    if (fetchError.name === 'AbortError' || fetchError.message?.includes('cancelled') || fetchManager?.isCancelled()) {
+                        setLoading(false);
+                        setIsWaiting(false);
+                        if (fetchManager && abortControllerRef.current) {
+                            fetchManager.removeAbortController(abortControllerRef.current);
+                            fetchManager.release();
+                            abortControllerRef.current = null;
+                        }
+                        return;
+                    }
+                    throw fetchError;
+                } finally {
+                    // Always release the fetch slot and cleanup
+                    if (fetchManager && abortControllerRef.current) {
+                        fetchManager.removeAbortController(abortControllerRef.current);
+                        fetchManager.release();
+                        abortControllerRef.current = null;
+                    }
                 }
             } else if (!finalData) {
                 // If offline and we don't have cached data, we won't show an error.
                 // The global toast on the page is sufficient. The card will just not render.
             }
 
-        } catch (e) {
+        } catch (e: any) {
+            // Don't show errors for cancelled fetches
+            if (e.message === 'Fetch cancelled' || e.name === 'AbortError' || fetchManager?.isCancelled()) {
+                setLoading(false);
+                setIsWaiting(false);
+                return;
+            }
+            
             console.error("Error in fetchData:", e);
             if (!finalData) setError("An unexpected error occurred.");
-        } finally {
-            if (finalData) {
-                setData(finalData);
-                hasUpdateResult = finalData.status !== 'No Update Found';
+            
+            // Ensure we release the fetch slot even on error
+            if (fetchManager && abortControllerRef.current) {
+                fetchManager.removeAbortController(abortControllerRef.current);
+                fetchManager.release();
+                abortControllerRef.current = null;
             }
-            setLoading(false);
-            onLoadComplete(hasUpdateResult);
-        }
-    }, [item.id, isOnline, onLoadComplete]);
-
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            ([entry]) => {
-                if (entry.isIntersecting) {
-                    setStartFetch(true);
-                    observer.disconnect();
+        } finally {
+            // Only update state if not cancelled
+            if (!fetchManager?.isCancelled()) {
+                if (finalData) {
+                    setData(finalData);
+                    hasUpdateResult = finalData.status !== 'No Update Found';
                 }
-            },
-            { rootMargin: '200px' }
-        );
-
-        if (cardRef.current) {
-            observer.observe(cardRef.current);
+                setLoading(false);
+                setIsWaiting(false);
+                // Only call onLoadComplete once per fetch
+                if (!hasCalledCompleteRef.current) {
+                    hasCalledCompleteRef.current = true;
+                    onLoadComplete(hasUpdateResult, hasUpdateResult && finalData ? { ...finalData, itemId: item.id } : undefined);
+                }
+            }
         }
+    }, [item.id, isOnline, onLoadComplete, fetchManager]);
 
-        return () => observer.disconnect();
-    }, []);
+    // Only start fetching when manually triggered (isFetchTriggered is true)
+    // No auto-fetching via IntersectionObserver
+    useEffect(() => {
+        if (isFetchTriggered && !startFetch) {
+            setStartFetch(true);
+        }
+    }, [isFetchTriggered]);
 
     useEffect(() => {
         if (startFetch && isFetchTriggered) {
@@ -112,51 +223,38 @@ export const UpdateCard: React.FC<{ item: any, onLoadComplete: (hasUpdate: boole
             if (releaseDate) {
                 const today = new Date();
                 today.setHours(0, 0, 0, 0); // Compare dates only, not time
-                setIsReleased(releaseDate < today);
+                const newIsReleased = releaseDate < today;
+                // Only update if value actually changed
+                setIsReleased(prev => prev !== newIsReleased ? newIsReleased : prev);
             } else {
-                setIsReleased(null); // Date is unparsable, like 'TBA'
+                setIsReleased(prev => prev !== null ? null : prev);
             }
         }
-    }, [data]);
+    }, [data?.release_date]); // Only depend on release_date, not entire data object
 
-    if (!startFetch) {
-        return <div ref={cardRef}><UpdateCardSkeleton /></div>;
-    }
-    
-    if (loading) {
-        return <UpdateCardSkeleton />;
+    // Don't render anything until fetch is triggered
+    if (!isFetchTriggered) {
+        return null;
     }
 
+    // Show loading state only while actively fetching
+    if (loading || isWaiting) {
+        return null; // Don't show loading cards - only show results
+    }
+
+    // Don't show error cards - errors are handled by toasts
     if (error) {
-        // The global toast on the Updates page is enough when offline.
-        // Don't show individual card errors if there's no cached data to display.
-        if (!isOnline && !data) {
-            return null;
-        }
-
-        const isOfflineError = error.includes("offline");
-        return (
-            <div className={`border p-4 rounded-lg text-sm space-y-2 ${isOfflineError ? 'bg-gray-50 border-gray-200 text-gray-600' : 'bg-red-50 border-red-200 text-red-700'}`}>
-                <p className="font-semibold">Could not fetch update for "{item.title}"</p>
-                <p className="text-xs">{error}</p>
-                {!isOfflineError && (
-                    <button 
-                        onClick={fetchData} 
-                        className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
-                    >
-                        Retry
-                    </button>
-                )}
-            </div>
-        );
+        return null;
     }
     
+    // Only render if we have data AND it's not "No Update Found"
     if (!data || data.status === 'No Update Found') {
         return null; // Don't render a card if no update is found
     }
 
+    // Memoize the card content to prevent re-renders when parent state changes
     return (
-        <div className="bg-secondary p-4 rounded-lg border border-border">
+        <div className="bg-secondary p-4 rounded-lg border border-border" style={{ willChange: 'auto' }}>
             <div className="flex justify-between items-start gap-2">
                 <h4 className="font-bold text-foreground">{data.new_title}</h4>
                 <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${getStatusBadgeClass(data.status)}`}>
@@ -190,3 +288,14 @@ export const UpdateCard: React.FC<{ item: any, onLoadComplete: (hasUpdate: boole
         </div>
     );
 };
+
+// Memoize the component to prevent unnecessary re-renders
+export const UpdateCard = memo(UpdateCardComponent, (prevProps, nextProps) => {
+    // Return true if props are equal (don't re-render), false if different (re-render)
+    return (
+        prevProps.item.id === nextProps.item.id &&
+        prevProps.isFetchTriggered === nextProps.isFetchTriggered &&
+        prevProps.fetchManager === nextProps.fetchManager &&
+        prevProps.onLoadComplete === nextProps.onLoadComplete
+    );
+});
